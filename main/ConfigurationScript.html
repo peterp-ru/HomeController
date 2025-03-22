@@ -1,0 +1,33 @@
+<script>
+function upload() {
+    var fileName = document.getElementById("filename").value;
+    if (fileName.length == 0) {
+        alert("No file selected!");
+    } else {
+        document.getElementById("filename").disabled = true;
+        document.getElementById("upload").disabled = true;
+        var xhttp = new XMLHttpRequest();
+        xhttp.onreadystatechange = function() {
+            if (xhttp.readyState == 4) {
+                if (xhttp.status == 200) {
+                    document.open();
+                    document.write(xhttp.responseText);
+                    document.close();
+                } else if (xhttp.status == 0) {
+                    alert("Server closed the connection abruptly!");
+                    location.reload()
+                } else {
+                    alert(xhttp.status + " Error!\n" + xhttp.responseText);
+                    location.reload()
+                }
+            }
+        };
+        xhttp.open("POST", "NewConfigFileName", true);
+        xhttp.send(fileName);
+    }
+}
+</script>
+<a href="/">Home page</a>
+</body>
+</html>
+    

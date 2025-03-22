@@ -1,0 +1,85 @@
+<!DOCTYPE html><html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ESP-32 device</title>
+</head>
+<body>
+    <h2>Configuration</h2><br>
+    <h3>Controls informarion</h3>
+    <table border="1">
+        <tr>
+            <th>Name</th>
+            <th>Load</th>
+            <th>DSNumber</th>
+            <th>DayStartTime</th>
+            <th>DayStopTime</th>
+            <th>DayMinTemp</th>
+            <th>DayMaxTemp</th>
+            <th>NigthMinTemp</th>
+            <th>NigthMaxTemp</th>
+        </tr>
+        <tr align = "center">
+            <td>Kitchen</td>
+            <td>18</td>
+            <td>0x28ffb4063317034b</td>
+            <td>6:39</td>
+            <td>22:28</td>
+            <td>20.58</td>
+            <td>23.8</td>
+            <td>22.48</td>
+            <td>24.58</td>
+        </tr>
+    </table>
+    <br>
+    <table border="0">
+        <col width="700px" />
+        <tr><td>
+            <table border="0">
+                <tr>
+                    <td>Current config file:</td>
+                    <td>Normal_22-24.dat</td>
+                </tr>
+                <tr>
+                    <td><label for="filename">New config file:</label></td>
+                    <td><input id="filename" type="text"></td>
+                </tr>
+                <tr>
+                    <td><button id="upload" type="button" onclick="upload()">Apply new Configuration</button></td>
+                </tr>
+            </table>
+        </td></tr>
+    </table>
+    <script>
+    function upload() {
+        var fileName = document.getElementById("filename").value;
+        if (fileName.length == 0) {
+            alert("No file selected!");
+        } else {
+            document.getElementById("filename").disabled = true;
+            document.getElementById("upload").disabled = true;
+            var xhttp = new XMLHttpRequest();
+            xhttp.onreadystatechange = function() {
+                if (xhttp.readyState == 4) {
+                    if (xhttp.status == 200) {
+                        document.open();
+                        document.write(xhttp.responseText);
+                        document.close();
+                    } else if (xhttp.status == 0) {
+                        alert("Server closed the connection abruptly!");
+                        location.reload()
+                    } else {
+                        alert(xhttp.status + " Error!\n" + xhttp.responseText);
+                        location.reload()
+                    }
+                }
+            };
+            xhttp.open("POST", "/NewConfigFileName", true);
+            xhttp.send(fileName);
+        }
+    }
+    </script>
+    <a href="/">Home page</a>
+</body>
+</html>
+    

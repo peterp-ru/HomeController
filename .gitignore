@@ -1,0 +1,5 @@
+*.log
+*.bin
+build/
+.vscode
+Archive

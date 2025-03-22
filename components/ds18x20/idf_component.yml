@@ -1,0 +1,5 @@
+dependencies:
+  onewire_bus:
+    version: ^1.0.0
+description: DS18X20 device driver
+version: 0.1.1

@@ -1,0 +1,77 @@
+<br>
+<table border="0">
+    <col width="700px" />
+    <tr><td>
+        <table border="0">
+            <tr>
+                <td>
+                    <label for="newfile">Firmware file</label>
+                </td>
+                <td colspan="2">
+                    <input id="newfile" type="file">
+                </td>
+            </tr>
+            <tr>
+                <td colspan="2">
+                    <label for="upload">Upload and flash</label>
+                </td>
+                <td>
+                    <button id="upload" type="button" onclick="upload()">Upload</button>
+                </td>
+            </tr>
+        </table>
+    </td></tr>
+</table>
+<script>
+function upload() {
+    var MAX_FILE_SIZE = 1000*1024;
+    var MAX_FILE_SIZE_STR = "1MB";
+    var filePath = ""
+    var upload_path = "";
+    var fileInput = document.getElementById("newfile").files;
+
+    if (fileInput.length !=0) {
+        filePath = document.getElementById("newfile").files[0].name;
+        upload_path = "/otaupdate/" + filePath;
+    }
+    if (fileInput.length == 0) {
+        alert("No file selected!");
+    } else if (filePath.length == 0) {
+        alert("File path on server is not set!");
+    } else if (filePath.indexOf(' ') >= 0) {
+        alert("File path on server cannot have spaces!");
+    } else if (filePath[filePath.length-1] == '/') {
+        alert("File name not specified after path!");
+    } else if (fileInput[0].size > 1000*1024) {
+        alert("File size must be less than 1MB!");
+    } else if (filePath.indexOf('index.html') >= 0) {
+        alert("Cannot load index.html!");
+    } else if (filePath.indexOf('favicon.ico') >= 0) {
+        alert("Cannot load favicon.ico!");
+    } else {
+        document.getElementById("newfile").disabled = true;
+        document.getElementById("upload").disabled = true;
+
+        var file = fileInput[0];
+        var xhttp = new XMLHttpRequest();
+        xhttp.onreadystatechange = function() {
+            if (xhttp.readyState == 4) {
+                if (xhttp.status == 200) {
+                    document.open();
+                    document.write(xhttp.responseText);
+                    document.close();
+                } else if (xhttp.status == 0) {
+                    alert("Server closed the connection abruptly!");
+                    location.reload()
+                } else {
+                    alert(xhttp.status + " Error!\n" + xhttp.responseText);
+                    location.reload()
+                }
+            }
+        }
+        xhttp.open("POST", upload_path, true);
+        xhttp.send(file);
+    }
+}
+</script>
+<a href="/">Home page</a></body></html>

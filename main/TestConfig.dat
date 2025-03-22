@@ -1,0 +1,5 @@
+# Name      # Load # DSNumber           # DayStartTime # DayStopTime # DayMinTemp # DayMaxTemp # NigthMinTemp # NigthMaxTemp #
+# 1         # 2    # 3                  # 4            # 5           # 6          # 7          # 8            # 9            #
+Toilet      18     0x8600080216D49710   6:40           22:28         25.58        26.8         26.48          27.58
+Kitchen     19     0x433C1DF649D59128	6:08           22:30         27.00        27.7         22.47          24.57
+MainRoom    21     0x773C76F649334B28   6:37           22:08         26.56        27.5         22.46          24.56
