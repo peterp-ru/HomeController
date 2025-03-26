@@ -1,17 +1,20 @@
 dependencies:
   espressif/onewire_bus:
-    dependencies: []
+    component_hash: c4c781940d8bd988432b47ac3ee68479c69e14e01fdfba0b61365b233a3ba5d6
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
     source:
-      path: C:\ESPIDF\Projects\HomeController\components\espressif__onewire_bus
-      type: local
-    version: 1.0.1
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.0.2
   idf:
     source:
       type: idf
     version: 5.4.0
 direct_dependencies:
 - espressif/onewire_bus
-- idf
-manifest_hash: 1468feb44b2696b4980d9d32ad21a88501d6716e1a84e4cb312b4976d289bc90
+manifest_hash: f5f470b6dfd8a98d65745505235fdcb1d83bc6636e4c950e68dc4042827c563a
 target: esp32
 version: 2.0.0
