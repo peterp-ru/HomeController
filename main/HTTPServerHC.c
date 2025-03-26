@@ -504,6 +504,7 @@ static esp_err_t upload_post_handler(httpd_req_t *req){
             }
             /* In case of unrecoverable error,
              * close and delete the unfinished file*/
+            free(Buf);
             fclose(fd);
             unlink(filepath);
             ESP_LOGE(TAG, "File reception failed!");
@@ -515,6 +516,7 @@ static esp_err_t upload_post_handler(httpd_req_t *req){
         if (received && (received != fwrite(Buf, 1, received, fd))) {
             /* Couldn't write everything to file!
              * Storage may be full? */
+            free(Buf);
             fclose(fd);
             unlink(filepath);
             ESP_LOGE(TAG, "File write failed!");
@@ -614,6 +616,7 @@ static esp_err_t otaupdate_post_handler(httpd_req_t *req){
     bool FailInWhile = false;
     update_partition = esp_ota_get_next_update_partition(NULL);
     if (update_partition == NULL) {
+        free(Buf);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to esp_ota_get_next_update_partition");
         return ESP_FAIL;
     }
@@ -689,8 +692,8 @@ static esp_err_t otaupdate_post_handler(httpd_req_t *req){
         }
         remaining -= received;
     }
+    free(Buf);
     if (FailInWhile) {
-        free(Buf);
         return ESP_FAIL;
     } 
     
@@ -748,6 +751,7 @@ static esp_err_t NewConfigFileName_post_handler(httpd_req_t *req){
     }
     received = httpd_req_recv(req, Buf, req->content_len);
     if (received != req->content_len) {
+        free(Buf);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to receive file name");
         return ESP_FAIL;
     }
