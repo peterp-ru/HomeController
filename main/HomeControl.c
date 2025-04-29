@@ -2,6 +2,8 @@
 #include "freertos/task.h"
 #include "freertos/timers.h"
 #include "driver/gpio.h"
+#include "esp_debug_helpers.h"
+#include "esp_cpu_utils.h"
 #include "esp_log.h"
 #include "esp_spiffs.h"
 #include "esp_vfs.h"
@@ -35,7 +37,17 @@ static const char *TAG = "HC_dev";
 #define HC_CONTROLLEVEL_LO 1
 #define HC_CONTROLLEVEL_HI 0
 #define GPIO_ONE_WIRE GPIO_NUM_33
-// #define HC_SHOWLOG true
+#define LOG_BUFFER_SIZE 1024 * 64 - 1
+#define CONFIG_RESTART_DEBUG_STACK_DEPTH 28
+#define CONFIG_RESTART_DEBUG_LOG_SIZE 4096 - sizeof(time_t) - CONFIG_RESTART_DEBUG_STACK_DEPTH * sizeof(uint32_t)
+//#define HC_SHOWLOG true
+
+// Do not exceed 4Kb. 
+typedef struct {
+    time_t BackTraceTime;
+    uint32_t BackTrace[CONFIG_RESTART_DEBUG_STACK_DEPTH];
+    char LogTail[CONFIG_RESTART_DEBUG_LOG_SIZE];
+  } re_restart_debug_t;
 
 const gpio_num_t OutputGPIO[MAX_DEVICES]={GPIO_NUM_18,GPIO_NUM_19,GPIO_NUM_21,GPIO_NUM_22,GPIO_NUM_23,GPIO_NUM_25,GPIO_NUM_26,GPIO_NUM_27};
 
@@ -67,6 +79,7 @@ ContextDataT HTTPServerContext = {
     .NVSConfiguration.KeyConfigFile = "ConfigFileName",
     .NVSConfiguration.NVS_Namespace = "HC_NVSNAME"
 };
+__NOINIT_ATTR static re_restart_debug_t DebugInfo;
 
 void ClearConfiguredDevices(DSesT *DSDev){
     for (int i = 0; i < DSDev->Count; i++){
@@ -631,8 +644,110 @@ int LogToRingBuffer(const char *fmt, va_list args){
     
 }
 
-static void uninitializeCtrl(void)
+esp_err_t SaveLogToFile(void)
 {
+    time_t now = 0;
+    struct tm timeinfo = { 0 };
+    char FilePath[25];
+    struct stat FileStat;
+    FILE *FileDescriptor = NULL;
+    //Check free space
+    // FilePath = "/data/202404211229.log"
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    strcpy(FilePath, HTTPServerContext.BasePath);
+    int BasePathLen = strlen(HTTPServerContext.BasePath);
+    strftime(FilePath + BasePathLen, 25 - BasePathLen, "/%Y%m%d%H%M.log", &timeinfo);
+    if (stat(FilePath, &FileStat) == 0) {
+        ESP_LOGE(TAG, "File %s already exists", FilePath);
+        return ESP_FAIL;
+    }
+    FileDescriptor = fopen(FilePath, "w");
+    if (!FileDescriptor) {
+        ESP_LOGE(TAG, "Failed to create file %s", FilePath);
+        return ESP_FAIL;
+    }
+    int remaining = HTTPServerContext.LogBuffer->mSize - HTTPServerContext.LogBuffer->mFree;
+    size_t ScratchBufferSize = (remaining < (int)(esp_get_free_heap_size() / 2) ? remaining : (int)(esp_get_free_heap_size() / 2));
+    char *Buf = malloc(ScratchBufferSize);
+    if (!Buf) {
+        // No mem for receive file
+        ESP_LOGE(TAG, "No mem for receive file");
+        fclose(FileDescriptor);
+        unlink(FilePath);
+        return ESP_FAIL;
+    }
+    int Getted = RingBufferRead(HTTPServerContext.LogBuffer, Buf, ScratchBufferSize, true);
+    while (Getted >0) {
+        if (Getted != fwrite(Buf, 1, Getted, FileDescriptor)) {
+            ESP_LOGE(TAG, "Couldn't write everything to file! Storage may be full?");
+            free(Buf);
+            fclose(FileDescriptor);
+            unlink(FilePath);
+            return ESP_FAIL;
+        }
+        Getted = RingBufferRead(HTTPServerContext.LogBuffer, Buf, ScratchBufferSize, false);
+    }
+    if (Getted < 0) {
+        ESP_LOGE(TAG, "Semaphore timed out while RingBufferRead");
+        free(Buf);
+        fclose(FileDescriptor);
+        unlink(FilePath);
+        return ESP_FAIL;
+    }
+    free(Buf);
+    fclose(FileDescriptor);
+    return ESP_OK;
+
+}
+
+void IRAM_ATTR DebugBacktraceUpdate(){
+    esp_backtrace_frame_t stk_frame;
+    esp_backtrace_get_start(&(stk_frame.pc), &(stk_frame.sp), &(stk_frame.next_pc)); 
+    DebugInfo.BackTrace[0] = esp_cpu_process_stack_pc(stk_frame.pc);
+    bool corrupted = (esp_stack_ptr_is_sane(stk_frame.sp) &&
+                    esp_ptr_executable((void*)esp_cpu_process_stack_pc(stk_frame.pc))) ? false : true; 
+    uint8_t i = CONFIG_RESTART_DEBUG_STACK_DEPTH;
+    while (i-- > 0 && stk_frame.next_pc != 0 && !corrupted) {
+        if (!esp_backtrace_get_next_frame(&stk_frame)) {
+            corrupted = true;
+        }
+        DebugInfo.BackTrace[CONFIG_RESTART_DEBUG_STACK_DEPTH - i] = esp_cpu_process_stack_pc(stk_frame.pc);
+    }
+    time(&DebugInfo.BackTraceTime);
+    // need fill DebugInfo.LogTail with size CONFIG_RESTART_DEBUG_LOG_SIZE
+    size_t ReadPoint;
+    size_t Tail = HTTPServerContext.LogBuffer->mTail;
+    size_t ToRead = HTTPServerContext.LogBuffer->mSize - HTTPServerContext.LogBuffer->mFree;
+    if (ToRead > CONFIG_RESTART_DEBUG_LOG_SIZE) ToRead = CONFIG_RESTART_DEBUG_LOG_SIZE;
+    if (ToRead == 0) return;
+    if (Tail > ToRead) {
+        ReadPoint = Tail - ToRead;
+        memcpy(DebugInfo.LogTail, HTTPServerContext.LogBuffer->mBuffer + ReadPoint, ToRead);
+    } else {
+        size_t PartOneSize = ToRead - Tail;
+        ReadPoint = HTTPServerContext.LogBuffer->mSize - PartOneSize;
+        memcpy(DebugInfo.LogTail, HTTPServerContext.LogBuffer->mBuffer + ReadPoint, PartOneSize);
+        memcpy(DebugInfo.LogTail + PartOneSize, HTTPServerContext.LogBuffer->mBuffer, Tail);
+    }
+
+}
+
+/**
+ * Declare the symbol pointing to the former implementation of esp_panic_handler function
+ */
+extern void __real_esp_panic_handler(void *info);
+
+/**
+ * Redefine esp_panic_handler function to save a log buffer before actually restarting
+ */
+void __wrap_esp_panic_handler(void *info){
+    DebugBacktraceUpdate();
+    __real_esp_panic_handler(info);
+
+}
+
+static void uninitializeCtrl(void){
     if (WifiReconnectTimer != NULL) xTimerDelete(WifiReconnectTimer, 0);
     if (TemperatureReaderHandle != NULL) vTaskDelete(TemperatureReaderHandle);
     hc_CurrentError = Stop_HTTP_Server(&HTTPServerData);
@@ -653,12 +768,14 @@ static void uninitializeCtrl(void)
     nvs_flash_deinit();
     if (TaskSayStatusHandle != NULL) vTaskDelete(TaskSayStatusHandle);
     TaskSayStatusHandle = NULL;
+    DebugBacktraceUpdate();
     RingBufferDestroy(HTTPServerContext.LogBuffer);
     free(HTTPServerContext.LogBuffer);
     HTTPServerContext.LogBuffer = NULL;
 }
 
 void app_main(void){
+    int i;
 #ifdef HC_SHOWLOG
     esp_log_level_set(TAG, ESP_LOG_DEBUG);
     // esp_log_level_set(TAG, ESP_LOG_INFO);
@@ -668,6 +785,37 @@ void app_main(void){
     // esp_log_level_set("wifi_init", ESP_LOG_INFO);
     // esp_log_level_set("wifi", ESP_LOG_INFO);
     esp_log_level_set("HC_HTTPServerHC", ESP_LOG_INFO);
+    HTTPServerContext.LogBuffer = malloc(sizeof(HCRingbufferT));
+    RingBufferCreate(HTTPServerContext.LogBuffer, LOG_BUFFER_SIZE); // initial size 64K
+    // copying crash dump info into log buffer
+    esp_reset_reason_t LastReset = esp_reset_reason();
+    if (LastReset != ESP_RST_POWERON){
+        char tmpBuf[140];
+        struct tm timeinfo = { 0 };
+        localtime_r(&DebugInfo.BackTraceTime, &timeinfo);
+        strftime(tmpBuf, 140, "Start Debug info from %d.%m.%Y %X \nBacktrace:\n", &timeinfo);
+        RingBufferPut(HTTPServerContext.LogBuffer, tmpBuf, strlen(tmpBuf));
+        i = 0;
+        char *BufferPoint;
+        while (i < CONFIG_RESTART_DEBUG_STACK_DEPTH) {
+            BufferPoint = tmpBuf;
+            for (int j = 0; j < 7 && i < CONFIG_RESTART_DEBUG_STACK_DEPTH; j++) {
+                BufferPoint += sprintf(BufferPoint, "0x%08lX ", DebugInfo.BackTrace[i]);
+                i++;
+            }
+            *BufferPoint++ = 13;
+            *BufferPoint++ = 0;
+            RingBufferPut(HTTPServerContext.LogBuffer, tmpBuf, strlen(tmpBuf));
+        }
+        sprintf(tmpBuf, "\nTail of the log:\n");
+        RingBufferPut(HTTPServerContext.LogBuffer, tmpBuf, strlen(tmpBuf));
+        RingBufferPut(HTTPServerContext.LogBuffer, DebugInfo.LogTail, 
+            strlen(DebugInfo.LogTail) < CONFIG_RESTART_DEBUG_LOG_SIZE ? strlen(DebugInfo.LogTail) : CONFIG_RESTART_DEBUG_LOG_SIZE);
+        sprintf(tmpBuf, "\nEnd of Debug info\n");
+        RingBufferPut(HTTPServerContext.LogBuffer, tmpBuf, strlen(tmpBuf));
+    } else {
+        memset(&DebugInfo, 0, sizeof(re_restart_debug_t));
+    }
     // Init secret data
     extern const unsigned char Secret_bin_start[] asm("_binary_Secret_bin_start");
     extern const unsigned char Secret_bin_end[]   asm("_binary_Secret_bin_end");
@@ -679,7 +827,7 @@ void app_main(void){
     // HTTPServerContext.Controls.Count alreay initialized
     HTTPServerContext.ControlDSData_mux = xSemaphoreCreateMutex();
     // HTTPServerContext.DSes.Count alreay initialized
-    HTTPServerContext.LogBuffer = malloc(sizeof(HCRingbufferT));
+    // HTTPServerContext.LogBuffer alreay initialized
     // HTTPServerContext.NVSConfiguration alreay initialized
     esp_chip_info(&ChipInfo);
     const char * tmpStr;
@@ -702,7 +850,6 @@ void app_main(void){
     // HTTPServerContext.SystemInfo.PartConfAddr see later
     // HTTPServerContext.SystemInfo.PartRunnAddr see later
     // HTTPServerContext.SystemInfo.ProjectName see later
-    esp_reset_reason_t LastReset = esp_reset_reason();
     if (LastReset == ESP_RST_SDIO) tmpStr="Reset over SDIO";
     else if (LastReset == ESP_RST_BROWNOUT) tmpStr="Brownout reset";
     else if (LastReset == ESP_RST_DEEPSLEEP) tmpStr="Exiting deep sleep mode";
@@ -720,7 +867,6 @@ void app_main(void){
     // finished filling SystemInfo & HTTPServerContext
     HTTPServerData.ServerHandle = NULL;
     HTTPServerData.ContextServerData = &HTTPServerContext;
-    RingBufferCreate(HTTPServerContext.LogBuffer, 1024 * 64 - 1); // initial size 64K
     LogFuncOriginal = esp_log_set_vprintf(LogToRingBuffer);
     // Configure pin led
     gpio_reset_pin(BLINK_GPIO);
@@ -728,7 +874,7 @@ void app_main(void){
     // Start blinker
     xTaskCreate(sayStatus, "sayStatus", 1024, NULL, tskIDLE_PRIORITY, &TaskSayStatusHandle);
     // Configure control load pins and set to Off
-    for (int i = 0; i < MAX_DEVICES; i++) {
+    for (i = 0; i < MAX_DEVICES; i++) {
         gpio_reset_pin(OutputGPIO[i]);
         gpio_set_direction(OutputGPIO[i], GPIO_MODE_OUTPUT);
         gpio_set_level(OutputGPIO[i], HC_CONTROLLEVEL_LO);
@@ -833,6 +979,7 @@ void app_main(void){
         } else break;
     }
     ESP_ERROR_CHECK(esp_register_shutdown_handler(&uninitializeCtrl));
+    if (LastReset != ESP_RST_POWERON) SaveLogToFile();
     ESP_LOGI(TAG, "Startup complete");
 
 }

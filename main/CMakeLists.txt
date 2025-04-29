@@ -3,3 +3,4 @@ idf_component_register(SRCS "HTTPServerHC.c" "RingBufferHC.c" "HomeControl.c"
                     EMBED_FILES "favicon.ico" "upload_script.html" "FirmwareScript.html" "ConfigurationScript.html" "Secret.bin")
 
 # spiffs_create_partition_image(storage ../spiffs_image FLASH_IN_PROJECT)
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=esp_panic_handler")
