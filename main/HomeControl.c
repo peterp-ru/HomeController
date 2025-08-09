@@ -109,9 +109,7 @@ esp_err_t SearchOWDevices(onewire_bus_handle_t bus, ContextDataT *Cntx){
         xSemaphoreGive(Cntx->ControlDSData_mux);
         return ESP_ERR_NO_MEM;
     }
-    ESP_ERROR_CHECK(onewire_new_device_iter(bus, &iter));
     ESP_LOGI(TAG, "Device iterator created, start searching...");
-    uint8_t FindAttemptCount = 0;
     do {
         search_result = onewire_device_iter_get_next(iter, &next_onewire_device);
         if (search_result == ESP_OK) { // found a new device, let's check if we can upgrade it to a DS18B20
@@ -137,8 +135,7 @@ esp_err_t SearchOWDevices(onewire_bus_handle_t bus, ContextDataT *Cntx){
                 ESP_LOGW(TAG, "Found an unknown device, address: %016llX", next_onewire_device.address);
             }
         }
-        FindAttemptCount++;
-    } while (search_result != ESP_ERR_NOT_FOUND || FindAttemptCount <= MAX_DEVICES + 1);
+    } while (search_result != ESP_ERR_NOT_FOUND);
     stDevices->Count = DeviceCount;
     if (onewire_del_device_iter(iter) != ESP_OK) ESP_LOGW(TAG, "Error while onewire_del_device_iter(iter) call");
     ESP_LOGI(TAG, "Searching done, %d DS18x20 device(s) found", DeviceCount);
@@ -196,20 +193,28 @@ esp_err_t LoadControlConfig(char *FileName, ContextDataT *DataCntx){
     int mHour;
     int mMinute;
     ControlOutputDataT LineData;
-    if (DataCntx->DSes.Count > 0)
-        ESP_LOGI(TAG, "Clearing & new search for sensors. Current count of sensors: %d", DataCntx->DSes.Count);
-    if(SearchOWDevices(OWBus, DataCntx) != ESP_OK){
-        ESP_LOGW(TAG, "Error searching sensors.");
-    }
     ESP_LOGI(TAG, "Loading configuration from file %s. Current controls: %d", FileName, DataCntx->Controls.Count);
-    xSemaphoreTake(DataCntx->ControlDSData_mux, portMAX_DELAY);
-    ClearConfiguredControls(&DataCntx->Controls);
     FILE *ConfigFile = fopen(FileName, "r");
     if (ConfigFile == NULL) {
         ESP_LOGI(TAG, "Cannot open file %s", FileName);
-        xSemaphoreGive(DataCntx->ControlDSData_mux);
         return ESP_ERR_NOT_FOUND;
     }
+    if (DataCntx->DSes.Count > 0)
+        ESP_LOGI(TAG, "Clearing & new search for sensors. Current count of sensors: %d", DataCntx->DSes.Count);
+    esp_err_t SearchResult;
+    int8_t AttemptCount = 0;
+    do {
+        SearchResult = SearchOWDevices(OWBus, DataCntx);
+        if(DataCntx->DSes.Count == 0) {
+            ESP_LOGW(TAG, "Cannot find any sensor, retrying...");
+            vTaskDelay(1000 / portTICK_PERIOD_MS);
+        }
+    } while (DataCntx->DSes.Count == 0 && SearchResult == ESP_OK && AttemptCount < MAX_DEVICES);
+    if(SearchResult != ESP_OK){
+        ESP_LOGW(TAG, "Error searching sensors.");
+    }
+    xSemaphoreTake(DataCntx->ControlDSData_mux, portMAX_DELAY);
+    ClearConfiguredControls(&DataCntx->Controls);
     while (fgets(BufferStr, MaxStringLength, ConfigFile)){
         LineCount++;
         if (strlen(BufferStr) >= MaxStringLength - 1) {
@@ -348,11 +353,14 @@ void ReadTemperatures(void *Param) {
     float temperature;
     bool NeedReload;
     time_t now;
-    ContextDataT *mContext = (ContextDataT*)Param;
-    DSDataHandleT *aDS = mContext->DSes.DSDevices;
-    char *ConfigFileName = mContext->NVSConfiguration.ConfigFileName;
+    ContextDataT *mContext;
+    DSDataHandleT *aDS;
+    char *ConfigFileName;
     while (true) {
+        mContext = (ContextDataT*)Param;
         if (xSemaphoreTake(mContext->ControlDSData_mux, HC_SemMaxWaitTime / portTICK_PERIOD_MS)) {
+            aDS = mContext->DSes.DSDevices;
+            ConfigFileName = mContext->NVSConfiguration.ConfigFileName;
             NeedReload = false;
             for (int i = 0; i < mContext->DSes.Count; i ++) {
                 GotError = true;
@@ -702,6 +710,11 @@ esp_err_t SaveLogToFile(void)
 }
 
 void IRAM_ATTR DebugBacktraceUpdate(){
+    /* Usage: In terminal window place follow text without line feed:
+        C:\ESPIDF\.espressif\tools\xtensa-esp-elf\esp-14.2.0_20241119\xtensa-esp-elf\bin\xtensa-esp32-elf-addr2line.exe 
+        -pfiaC -e C:\ESPIDF\Projects\HomeController\build\HomeController.elf 
+        0x400DB69D 0x400D3716 0x400DBEE0 0x4015B64B 0x4008B1F1
+    */
     esp_backtrace_frame_t stk_frame;
     esp_backtrace_get_start(&(stk_frame.pc), &(stk_frame.sp), &(stk_frame.next_pc)); 
     DebugInfo.BackTrace[0] = esp_cpu_process_stack_pc(stk_frame.pc);
@@ -768,6 +781,7 @@ static void uninitializeCtrl(void){
     nvs_flash_deinit();
     if (TaskSayStatusHandle != NULL) vTaskDelete(TaskSayStatusHandle);
     TaskSayStatusHandle = NULL;
+    ESP_LOGI(TAG, "Shutdown complete.");
     DebugBacktraceUpdate();
     RingBufferDestroy(HTTPServerContext.LogBuffer);
     free(HTTPServerContext.LogBuffer);
@@ -954,9 +968,10 @@ void app_main(void){
     }
     // Start the file server called from wifi_event_handler
     ESP_ERROR_CHECK(esp_wifi_start());
-    // Start task for read temperature
-    if (xTaskCreate(ReadTemperatures, "ReadTemp", 1024*3, &HTTPServerContext, tskIDLE_PRIORITY, &TemperatureReaderHandle) != pdPASS)
-       ESP_LOGE(TAG, "Error create task ReadTemperatures");
+    // Start task for read temperature whith priority +10/ http server have priority +5
+    if (xTaskCreate(ReadTemperatures, "ReadTemp", 1024 * 3, &HTTPServerContext, tskIDLE_PRIORITY + 10, 
+        &TemperatureReaderHandle) != pdPASS)
+        ESP_LOGE(TAG, "Error create task ReadTemperatures");
     hc_Status &= ~HC_STATUS_BIT_INIT;
     ESP_LOGI(TAG, "Initialize finished");
     // Check OTA updates after pause 10 sec for got ip address and start HTTP server

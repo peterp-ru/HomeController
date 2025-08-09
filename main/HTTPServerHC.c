@@ -719,9 +719,7 @@ static esp_err_t otaupdate_post_handler(httpd_req_t *req){
     TimerHandle_t  vRestartTimer = xTimerCreate("restart_tmr", RestartDelay * 1000 / portTICK_PERIOD_MS, pdFALSE, NULL, vRestartCallback);
     xTimerStart(vRestartTimer, 0);
     ESP_LOGI(TAG, "Scheduled restart at %d second", RestartDelay);
-    httpd_resp_set_status(req, "303 See Other");
-    httpd_resp_set_hdr(req, "Location", "/");
-    httpd_resp_sendstr(req, "Flash is complete. Device restarting.");
+    httpd_resp_sendstr(req, "Flash is complete. Device restarting in 10 sec. Press Refresh buitton on you browser.");
     return ESP_OK;
 
 }
@@ -780,10 +778,7 @@ static esp_err_t NewConfigFileName_post_handler(httpd_req_t *req){
     nvs_close(HCNVSHandle);
     if (HTTPServerCntx->NVSConfiguration.ConfigFileName != NULL) free(HTTPServerCntx->NVSConfiguration.ConfigFileName);
     HTTPServerCntx->NVSConfiguration.ConfigFileName = strdup(FullFileName);
-    /* Redirect onto root to see the updated file list */
-    httpd_resp_set_status(req, "303 See Other");
-    httpd_resp_set_hdr(req, "Location", "/");
-    httpd_resp_sendstr(req, "File saved, configuration updated.");
+    httpd_resp_sendstr(req, "File saved, configuration updated. Press Refresh buitton on you browser.");
     return ESP_OK;
 
 }
